@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+# browser-picker-rules — GUI to manage smart-default rules for browser-picker.
+# Each rule: [enabled checkbox] [editable pattern] [browser/profile dropdown] [▲ ▼ ✕].
+#
+# Optional arg: a URL. When given, a new editable row is pre-filled with a sensible
+# pattern derived from that URL, and the link is opened (via browser-picker) after Save.
+import gi, os, sys, json, shutil, subprocess, configparser, urllib.parse
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, GLib
+
+CONF = os.path.join(GLib.get_user_config_dir(), "browser-picker")
+BROWSERS = os.path.join(CONF, "browsers.conf")
+RULES = os.path.join(CONF, "rules.conf")
+HOME = os.path.expanduser("~")
+
+
+def read_lines(path):
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path) as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#") or "|||" not in s:
+                continue
+            out.append(s)
+    return out
+
+
+def load_labels():
+    return [ln.split("|||", 1)[0] for ln in read_lines(BROWSERS)]
+
+
+def load_rules():
+    rules = []
+    for ln in read_lines(RULES):
+        parts = ln.split("|||")
+        if len(parts) == 3:
+            en, pat, lbl = parts
+            rules.append((en == "1", pat, lbl))
+    return rules
+
+
+def default_pattern(url):
+    p = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
+    host = p.netloc.split("@")[-1]
+    if host.startswith("www."):
+        host = host[4:]
+    segs = [s for s in p.path.split("/") if s]
+    return "/".join([host] + segs[:2])
+
+
+def normcmd(c):
+    return " ".join(c.replace('"', "").split())
+
+
+def discover_browsers():
+    """Return [(label, command)] for installed browsers + their profiles."""
+    found = []
+    # Chromium-family: profiles live in "Local State" -> profile.info_cache.
+    for disp, binname, base in (
+        ("Chromium", "chromium", f"{HOME}/.config/chromium"),
+        ("Brave", "brave", f"{HOME}/.config/BraveSoftware/Brave-Browser"),
+        ("Chrome", "google-chrome-stable", f"{HOME}/.config/google-chrome"),
+        ("Edge", "microsoft-edge-stable", f"{HOME}/.config/microsoft-edge"),
+    ):
+        if not shutil.which(binname):
+            continue
+        ls = os.path.join(base, "Local State")
+        cache = {}
+        if os.path.exists(ls):
+            try:
+                cache = json.load(open(ls)).get("profile", {}).get("info_cache", {})
+            except Exception:
+                cache = {}
+        if cache:
+            for dirname, info in cache.items():
+                name = info.get("name") or dirname
+                found.append((f"{disp} — {name}", f'{binname} --profile-directory="{dirname}"'))
+        else:
+            found.append((disp, binname))
+    # Firefox-family: profiles live in profiles.ini -> [Profile*] Name=.
+    for disp, binname, ini in (
+        ("Firefox", "firefox", f"{HOME}/.mozilla/firefox/profiles.ini"),
+        ("Zen", "zen-browser", f"{HOME}/.config/zen/profiles.ini"),
+    ):
+        if not shutil.which(binname):
+            continue
+        names = []
+        if os.path.exists(ini):
+            cp = configparser.ConfigParser()
+            try:
+                cp.read(ini)
+                for sec in cp.sections():
+                    if cp.has_option(sec, "Name"):
+                        names.append(cp.get(sec, "Name"))
+            except Exception:
+                names = []
+        if names:
+            for n in names:
+                found.append((f"{disp} — {n}", f'{binname} -P "{n}"'))
+        else:
+            found.append((disp, binname))
+    return found
+
+
+class RulesApp(Gtk.Application):
+    def __init__(self, url=None):
+        super().__init__(application_id="dev.local.BrowserPickerRules")
+        self.url = url
+
+    def do_activate(self):
+        self.labels = load_labels()
+        self.rows = []
+
+        win = Gtk.ApplicationWindow(application=self, title="Browser Picker — Rules")
+        win.set_default_size(740, 480)
+        self.win = win
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        for m in ("top", "bottom", "start", "end"):
+            getattr(root, f"set_margin_{m}")(12)
+        win.set_child(root)
+
+        help_lbl = Gtk.Label(xalign=0)
+        help_lbl.set_markup(
+            "Links matching an <b>enabled</b> rule open directly in the chosen profile "
+            "(no menu).\nPattern: plain text = <b>substring</b> match (covers a URL and "
+            "its child paths); use <b>*</b> or <b>?</b> for a glob. First match wins — use "
+            "▲ ▼ to set priority."
+        )
+        help_lbl.set_wrap(True)
+        root.append(help_lbl)
+
+        if self.url:
+            ctx = Gtk.Label(xalign=0)
+            ctx.set_markup(f"Creating a rule for: <tt>{GLib.markup_escape_text(self.url)}</tt>  "
+                           "— trim the pattern to the scope you want, then Save.")
+            ctx.set_wrap(True)
+            root.append(ctx)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for text, w in (("On", 30), ("Pattern", 300), ("Open in", 200), ("", 96)):
+            l = Gtk.Label(label=text, xalign=0)
+            l.set_size_request(w, -1)
+            header.append(l)
+        root.append(header)
+
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        scroller.set_child(self.list_box)
+        root.append(scroller)
+
+        btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        add_btn = Gtk.Button(label="＋ Add rule")
+        add_btn.connect("clicked", lambda _b: self.add_row(True, "", None))
+        rescan_btn = Gtk.Button(label="⟳ Rescan profiles")
+        rescan_btn.set_tooltip_text("Re-detect installed browsers and profiles")
+        rescan_btn.connect("clicked", self.on_rescan)
+        save_btn = Gtk.Button(label="Save")
+        save_btn.add_css_class("suggested-action")
+        save_btn.connect("clicked", self.on_save)
+        self.status = Gtk.Label(xalign=0)
+        btns.append(add_btn)
+        btns.append(rescan_btn)
+        btns.append(self.status)
+        btns.append(Gtk.Box(hexpand=True))
+        btns.append(save_btn)
+        root.append(btns)
+
+        prefill_entry = None
+        if self.url:
+            self.add_row(True, default_pattern(self.url), None)
+            prefill_entry = self.rows[-1]["entry"]
+        for en, pat, lbl in load_rules():
+            self.add_row(en, pat, lbl)
+        if not self.rows:
+            self.add_row(True, "", None)
+
+        win.present()
+        if prefill_entry is not None:
+            def focus():
+                prefill_entry.grab_focus()
+                prefill_entry.select_region(0, -1)
+                return False
+            GLib.idle_add(focus)
+
+    def add_row(self, enabled, pattern, label):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+        check = Gtk.CheckButton()
+        check.set_active(bool(enabled))
+        check.set_size_request(30, -1)
+
+        entry = Gtk.Entry()
+        entry.set_text(pattern or "")
+        entry.set_placeholder_text("e.g. github.com/myorg/myrepo")
+        entry.set_hexpand(True)
+        entry.set_size_request(300, -1)
+
+        drop = Gtk.DropDown.new_from_strings(self.labels or ["(no browsers found)"])
+        if label in self.labels:
+            drop.set_selected(self.labels.index(label))
+        drop.set_size_request(200, -1)
+
+        up = Gtk.Button(label="▲")
+        down = Gtk.Button(label="▼")
+        remove = Gtk.Button(label="✕")
+        for b in (up, down, remove):
+            b.set_size_request(28, -1)
+
+        rec = {"box": row, "check": check, "entry": entry, "drop": drop}
+        up.connect("clicked", lambda _b, r=rec: self.move_row(r, -1))
+        down.connect("clicked", lambda _b, r=rec: self.move_row(r, +1))
+        remove.connect("clicked", lambda _b, r=rec: self.remove_row(r))
+
+        for w in (check, entry, drop, up, down, remove):
+            row.append(w)
+        self.list_box.append(row)
+        self.rows.append(rec)
+
+    def move_row(self, rec, delta):
+        i = self.rows.index(rec)
+        j = i + delta
+        if j < 0 or j >= len(self.rows):
+            return
+        self.rows[i], self.rows[j] = self.rows[j], self.rows[i]
+        prev = None
+        for r in self.rows:
+            self.list_box.reorder_child_after(r["box"], prev)
+            prev = r["box"]
+
+    def remove_row(self, rec):
+        self.list_box.remove(rec["box"])
+        self.rows.remove(rec)
+
+    def on_rescan(self, _btn):
+        existing = read_lines(BROWSERS)
+        seen = {normcmd(l.split("|||", 1)[1]) for l in existing if "|||" in l}
+        lines = list(existing)
+        added = 0
+        for label, cmd in discover_browsers():
+            if normcmd(cmd) in seen:
+                continue
+            lines.append(f"{label}|||{cmd}")
+            seen.add(normcmd(cmd))
+            added += 1
+        with open(BROWSERS, "w") as f:
+            f.write("# Browsers + profiles offered by the picker.\n"
+                    "# Format: Label|||command   (command may contain quotes; URL appended)\n")
+            f.write("\n".join(lines) + "\n")
+        # Refresh every dropdown's choices, keeping current selections.
+        old = self.labels
+        self.labels = load_labels()
+        for rec in self.rows:
+            idx = rec["drop"].get_selected()
+            cur = old[idx] if (old and 0 <= idx < len(old)) else None
+            rec["drop"].set_model(Gtk.StringList.new(self.labels or ["(no browsers found)"]))
+            if cur in self.labels:
+                rec["drop"].set_selected(self.labels.index(cur))
+        self.status.set_text(f"Rescan: +{added} new profile(s) ({len(self.labels)} total).")
+
+    def on_save(self, _btn):
+        os.makedirs(CONF, exist_ok=True)
+        lines = [
+            "# Smart-default rules — managed by the \"Browser Picker Rules\" app (browser-picker-rules).",
+            "# Format: enabled|||pattern|||label   (enabled 1/0; pattern substring or */? glob)",
+        ]
+        n = 0
+        for r in self.rows:
+            pat = r["entry"].get_text().strip()
+            if not pat:
+                continue
+            idx = r["drop"].get_selected()
+            if not self.labels or idx >= len(self.labels):
+                continue
+            lbl = self.labels[idx]
+            en = "1" if r["check"].get_active() else "0"
+            lines.append(f"{en}|||{pat}|||{lbl}")
+            n += 1
+        with open(RULES, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+        if self.url:
+            subprocess.Popen(["setsid", "-f", "browser-picker", self.url],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.quit()
+        else:
+            self.status.set_text(f"Saved {n} rule(s).")
+
+
+url = sys.argv[1] if len(sys.argv) > 1 else None
+RulesApp(url).run(None)

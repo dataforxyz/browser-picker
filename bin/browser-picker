@@ -1,0 +1,83 @@
+#!/bin/bash
+# browser-picker — pick a browser + profile when opening a link, with smart-default rules.
+# Default http/https handler (browser-picker.desktop).
+# Config (edit via the "Browser Picker Rules" app, the in-menu "Always open…", or by hand):
+#   ~/.config/browser-picker/browsers.conf   browser+profile entries
+#   ~/.config/browser-picker/rules.conf      smart-default rules
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/browser-picker"
+RULESFILE="$CONF/rules.conf"
+EDIT_LABEL="⚙  Edit rules…"
+REMEMBER_LABEL="📌  Always open this site in…"
+
+mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
+mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
+
+url="$1"
+
+resolve() {  # label -> command string
+  local label="$1" e
+  for e in "${ENTRIES[@]}"; do
+    [ "${e%%|||*}" = "$label" ] && { printf '%s' "${e#*|||}"; return 0; }
+  done
+  return 1
+}
+
+launch() {  # <command-string> <urls...> -> run detached
+  local cmd="$1"; shift
+  eval "setsid -f $cmd \"\$@\"" >/dev/null 2>&1
+}
+
+menu() {  # prompt on $1, options on stdin -> selected line on stdout
+  if command -v omarchy-launch-walker >/dev/null 2>&1; then
+    omarchy-launch-walker --dmenu --width 380 --minheight 1 --maxheight 500 -p "$1" 2>/dev/null
+  else
+    walker --dmenu --width 380 -p "$1" 2>/dev/null
+  fi
+}
+
+entry_labels() { for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}"; done; }
+
+# 1) Smart defaults: first enabled, matching rule wins — skips the menu.
+if [ -n "$url" ]; then
+  for r in "${RULES[@]}"; do
+    en="${r%%|||*}"; rest="${r#*|||}"
+    pat="${rest%%|||*}"; lbl="${rest#*|||}"
+    [ "$en" = "1" ] || continue
+    [ -z "$pat" ] && continue
+    if [[ "$pat" == *[*?]* ]]; then
+      [[ "$url" == $pat ]] || continue
+    else
+      [[ "$url" == *"$pat"* ]] || continue
+    fi
+    if cmd="$(resolve "$lbl")"; then
+      launch "$cmd" "$@"
+      exit 0
+    fi
+    break   # rule names an unknown label -> fall through to the picker
+  done
+fi
+
+# 2) Show the picker.
+build_menu() {
+  [ -n "$url" ] && printf '%s\n' "$REMEMBER_LABEL"
+  entry_labels
+  printf '%s\n' "$EDIT_LABEL"
+}
+choice="$(build_menu | menu "Open link in…")"
+[ -z "$choice" ] && exit 0
+
+case "$choice" in
+  "$EDIT_LABEL")
+    setsid -f browser-picker-rules >/dev/null 2>&1
+    exit 0
+    ;;
+  "$REMEMBER_LABEL")
+    # Open the rules editor pre-filled with this URL; it opens the link after Save.
+    setsid -f browser-picker-rules "$url" >/dev/null 2>&1
+    exit 0
+    ;;
+esac
+
+cmd="$(resolve "$choice")" || exit 0
+launch "$cmd" "$@"

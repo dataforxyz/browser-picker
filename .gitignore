@@ -1,0 +1,6 @@
+# Python cache (rules editor)
+__pycache__/
+*.pyc
+
+# Personal config lives in ~/.config/browser-picker/, never in the repo.
+# Only the *.example templates are tracked.
