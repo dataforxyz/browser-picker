@@ -79,12 +79,17 @@ check(peek_after([("https://github.com/orgA/r", W), ("https://github.com/orgB/r"
                  "https://github.com/orgC/r") == ("github.com", W, False),
       "host generalization")
 
-# Contested host: another profile also uses the org -> don't offer the org rule.
+# One stray pick with another profile no longer vetoes a dominant habit.
 check(peek_after([("https://github.com/orgA/repo1", W),
                   ("https://github.com/orgA/repo2", W),
                   ("https://github.com/orgA/repo9", P)],
+                 "https://github.com/orgA/repo3") == ("github.com/orgA", W, False),
+      "dominant profile wins despite one stray pick")
+# A genuine tie (50/50) stays quiet rather than guessing.
+check(peek_after([("https://github.com/orgA/repo1", W), ("https://github.com/orgA/repo2", W),
+                  ("https://github.com/orgA/repo7", P), ("https://github.com/orgA/repo8", P)],
                  "https://github.com/orgA/repo3") is None,
-      "contested org -> no offer")
+      "true tie -> no offer")
 
 # --- private windows are a distinct habit ---
 # Repeated PRIVATE picks -> offer a private default (3rd field True).
@@ -103,8 +108,10 @@ check(store["events"] == [], "non-http not recorded")
 store = store_from([("https://x.com/a", W, True)])
 check(store["events"][0].get("private") is True, "private pick recorded with flag")
 
-# Tunable threshold via settings.conf is honoured by threshold() (here just check the floor of 2).
-check(bprec.threshold() >= 2, "threshold floor")
+# Default threshold offers on the 1st repeat: one prior pick of the same place -> offer on reopen.
+check(bprec.threshold() == 2, "default threshold is 2 (offer on 1st repeat)")
+check(peek_after([("https://x.io/a/1", W)], "https://x.io/a/1", threshold_n=2) == ("x.io/a/1", W, False),
+      "1st repeat -> offer at threshold 2")
 
 # --- add_rule: idempotent, inserted before a catch-all, private writes a 4th field ---
 tmp = tempfile.mkdtemp()

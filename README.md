@@ -103,8 +103,8 @@ matching link the picker shows a one-click shortcut as its **first** menu item:
 Pick it and the link opens in that profile **and** the rule is written, so it auto-routes from
 then on. No second popup, no extra step — pick a normal profile instead and it just opens (and
 keeps learning). It **generalizes across URLs** rather than memorizing one address, suggesting
-the broadest pattern that stays *pure* (won't capture links you open with a *different*
-profile):
+the broadest pattern owned by a *dominant* profile (one stray pick with another profile won't
+veto an obvious habit; a genuine 50/50 tie stays quiet):
 
 | What you opened (same profile)                          | Shortcut creates  |
 | ------------------------------------------------------- | ----------------- |
@@ -118,9 +118,10 @@ that always opens that scope in a private window. Normal and private habits neve
 
 This is a **local recommender** (`browser-picker-recommend`) — no network, no API keys, no
 LLM; your URLs never leave the machine. History lives in
-`~/.config/browser-picker/history.json`. The shortcut appears on the **3rd** matching open by
-default; tune it with `threshold=N` in `~/.config/browser-picker/settings.conf` (or the
-`BROWSER_PICKER_SUGGEST_THRESHOLD` env var), minimum `2`.
+`~/.config/browser-picker/history.json`. The shortcut appears on the **1st repeat** (the 2nd
+matching open) by default; raise it with `threshold=N` in
+`~/.config/browser-picker/settings.conf` (or the `BROWSER_PICKER_SUGGEST_THRESHOLD` env var),
+minimum `2`.
 
 ## Notes / limitations
 

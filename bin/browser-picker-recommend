@@ -34,10 +34,11 @@ SEG_CAP = 2  # generalize at most to host + 2 path segments (matches rules edito
 
 
 def threshold():
-    """Picks of the same place+profile before the picker offers a default.
+    """Total picks of the same place+profile before the picker offers a default.
 
-    settings.conf `threshold=N` wins, then $BROWSER_PICKER_SUGGEST_THRESHOLD, then 3. The
-    file lets you tune it even though the .desktop launcher passes no environment.
+    Default 2 — the offer appears on the *1st repeat* (the 2nd open). settings.conf
+    `threshold=N` wins, then $BROWSER_PICKER_SUGGEST_THRESHOLD. The file lets you tune it even
+    though the .desktop launcher passes no environment.
     """
     try:
         with open(SETTINGS) as f:
@@ -48,9 +49,9 @@ def threshold():
     except (OSError, ValueError):
         pass
     try:
-        return max(2, int(os.environ.get("BROWSER_PICKER_SUGGEST_THRESHOLD", "3")))
+        return max(2, int(os.environ.get("BROWSER_PICKER_SUGGEST_THRESHOLD", "2")))
     except ValueError:
-        return 3
+        return 2
 
 
 def url_parts(url):
@@ -105,8 +106,10 @@ def _under(host, pat_segs, ev):
 def recommend(events, label, host, need, private=False):
     """Best (pattern, count) for (label, private, host) given >= need picks, or None.
 
-    Generalizes to the deepest common ancestor of what was actually opened, then keeps the
-    rule pure: it must not also cover links opened with a different profile / private choice.
+    Generalizes to the deepest common ancestor of what was actually opened, then requires that
+    this profile/private choice *dominates* under the pattern — it owns at least `need` picks
+    and a strict majority of them — so one stray pick with another profile can't veto an
+    obvious habit, but a genuine tie (50/50) still stays quiet rather than guess wrong.
     """
     if not host:
         return None
@@ -114,19 +117,22 @@ def recommend(events, label, host, need, private=False):
     cluster = [e for e in events if e.get("host") == host and _ident(e) == ident]
     if len(cluster) < need:
         return None
+    others = [e for e in events if e.get("host") == host and _ident(e) != ident]
 
-    def pure(pat_segs):
-        return not any(_under(host, pat_segs, e) for e in events if _ident(e) != ident)
+    def dominant(pat_segs):
+        mine = sum(1 for e in cluster if _under(host, pat_segs, e))
+        opp = sum(1 for e in others if _under(host, pat_segs, e))
+        return mine if (mine >= need and mine > opp) else 0
 
     pref = common_prefix([e.get("segs") or [] for e in cluster])[:SEG_CAP]
-    if pure(pref):
-        return make_pattern(host, pref), len(cluster)
-
+    m = dominant(pref)
+    if m:
+        return make_pattern(host, pref), m
     narrow = (cluster[-1].get("segs") or [])[:SEG_CAP]
-    if narrow and pure(narrow):
-        cnt = sum(1 for e in cluster if _under(host, narrow, e))
-        if cnt >= need:
-            return make_pattern(host, narrow), cnt
+    if narrow:
+        m = dominant(narrow)
+        if m:
+            return make_pattern(host, narrow), m
     return None
 
 
