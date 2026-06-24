@@ -44,6 +44,32 @@ def load_rules():
     return rules
 
 
+def parse_args(argv):
+    """(url, pattern, label, no_open) from argv (the args after the program name).
+
+    Positional URL stays backward-compatible; --pattern/--label pre-fill the new row (used by
+    the recommender's suggestion), and --no-open skips relaunching the link on Save (the
+    browser is already open from the pick that triggered the suggestion).
+    """
+    url = pattern = label = None
+    no_open = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--no-open":
+            no_open = True
+        elif a == "--pattern" and i + 1 < len(argv):
+            i += 1
+            pattern = argv[i]
+        elif a == "--label" and i + 1 < len(argv):
+            i += 1
+            label = argv[i]
+        elif not a.startswith("--") and url is None:
+            url = a
+        i += 1
+    return url, pattern, label, no_open
+
+
 def default_pattern(url):
     p = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
     host = p.netloc.split("@")[-1]
@@ -116,9 +142,12 @@ def discover_browsers():
 
 
 class RulesApp(Gtk.Application):
-    def __init__(self, url=None):
+    def __init__(self, url=None, pattern=None, label=None, no_open=False):
         super().__init__(application_id="dev.local.BrowserPickerRules")
         self.url = url
+        self.pattern = pattern
+        self.label = label
+        self.no_open = no_open
 
     def model_items(self, label):
         return model_items(self.labels, label)
@@ -148,8 +177,14 @@ class RulesApp(Gtk.Application):
 
         if self.url:
             ctx = Gtk.Label(xalign=0)
-            ctx.set_markup(f"Creating a rule for: <tt>{GLib.markup_escape_text(self.url)}</tt>  "
-                           "— trim the pattern to the scope you want, then Save.")
+            if self.label:
+                ctx.set_markup(
+                    f"You've opened <tt>{GLib.markup_escape_text(self.url)}</tt> in "
+                    f"<b>{GLib.markup_escape_text(self.label)}</b> a few times.\n"
+                    "Review the pattern below — trim it to the scope you want — then Save.")
+            else:
+                ctx.set_markup(f"Creating a rule for: <tt>{GLib.markup_escape_text(self.url)}</tt>  "
+                               "— trim the pattern to the scope you want, then Save.")
             ctx.set_wrap(True)
             root.append(ctx)
 
@@ -208,7 +243,7 @@ class RulesApp(Gtk.Application):
 
         prefill_entry = None
         if self.url:
-            self.add_row(True, default_pattern(self.url), None)
+            self.add_row(True, self.pattern or default_pattern(self.url), self.label)
             prefill_entry = self.rows[-1]["entry"]
         for en, pat, lbl in rules:
             self.add_row(en, pat, lbl)
@@ -355,8 +390,9 @@ class RulesApp(Gtk.Application):
             f.write("\n".join(lines) + "\n")
 
         if self.url:
-            subprocess.Popen(["setsid", "-f", "browser-picker", self.url],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if not self.no_open:
+                subprocess.Popen(["setsid", "-f", "browser-picker", self.url],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.quit()
         else:
             msg = f"Saved {n} rule(s)."
@@ -366,5 +402,5 @@ class RulesApp(Gtk.Application):
 
 
 if __name__ == "__main__":
-    url = sys.argv[1] if len(sys.argv) > 1 else None
-    RulesApp(url).run(None)
+    _url, _pattern, _label, _no_open = parse_args(sys.argv[1:])
+    RulesApp(_url, _pattern, _label, _no_open).run(None)

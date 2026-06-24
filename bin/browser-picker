@@ -10,6 +10,9 @@ RULESFILE="$CONF/rules.conf"
 REMEMBER_LABEL="📌  Always open this site in…"
 EDIT_LABEL="⚙  Edit rules…"
 PRIV_SUFFIX="  🕶 Private"
+SUGGEST_YES="✓  Yes — make it the default"
+SUGGEST_LATER="Not now"
+SUGGEST_NEVER="Never suggest this"
 
 resolve() {  # label -> command string (looks in ENTRIES)
   local label="$1" e
@@ -62,6 +65,26 @@ entry_labels() { local e; for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}
 entry_private_labels() { local e; for e in "${ENTRIES[@]}"; do printf '%s\n' "${e%%|||*}$PRIV_SUFFIX"; done; }
 
 notify() { command -v notify-send >/dev/null 2>&1 && notify-send "Browser Picker" "$1"; }
+
+# After repeated manual picks, the recommender (browser-picker-recommend) suggests a default
+# rule. Confirm with the user, then open the rules editor pre-filled, or record the dismissal.
+suggest_default_rule() {  # <url> <pattern> <label>
+  local url="$1" pattern="$2" label="$3" pick
+  pick="$(
+    { printf '%s\n' "$SUGGEST_YES" "$SUGGEST_LATER" "$SUGGEST_NEVER"; } \
+      | menu "Open $pattern in '$label' from now on?"
+  )"
+  case "$pick" in
+    "$SUGGEST_YES")
+      browser-picker-recommend dismiss --label "$label" --pattern "$pattern" --mode never >/dev/null 2>&1
+      setsid -f browser-picker-rules --no-open --pattern "$pattern" --label "$label" "$url" >/dev/null 2>&1 ;;
+    "$SUGGEST_NEVER")
+      browser-picker-recommend dismiss --label "$label" --pattern "$pattern" --mode never >/dev/null 2>&1 ;;
+    "$SUGGEST_LATER")
+      browser-picker-recommend dismiss --label "$label" --pattern "$pattern" --mode snooze >/dev/null 2>&1 ;;
+    *) : ;;  # dismissed (Esc) — leave it; we may ask again next time
+  esac
+}
 
 main() {
   mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
@@ -124,6 +147,13 @@ main() {
 
   cmd="$(resolve "$choice")" || return 0
   launch "$cmd" "$@"
+
+  # Learn this manual pick; if it's the 3rd for a similar place, offer a smart-default rule.
+  if [ -n "$url" ] && command -v browser-picker-recommend >/dev/null 2>&1; then
+    local rec
+    rec="$(browser-picker-recommend pick --url "$url" --label "$choice" 2>/dev/null)"
+    [ -n "$rec" ] && suggest_default_rule "$url" "${rec%%$'\t'*}" "${rec#*$'\t'}"
+  fi
 }
 
 # Run main only when executed directly; sourcing (e.g. tests) just loads the functions.

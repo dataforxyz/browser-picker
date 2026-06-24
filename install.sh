@@ -11,8 +11,9 @@ CFG="${XDG_CONFIG_HOME:-$HOME/.config}/browser-picker"
 mkdir -p "$BIN" "$APPS" "$CFG"
 
 # Executables: symlinked so edits in the repo go live immediately.
-ln -sf "$REPO/bin/browser-picker"       "$BIN/browser-picker"
-ln -sf "$REPO/bin/browser-picker-rules" "$BIN/browser-picker-rules"
+ln -sf "$REPO/bin/browser-picker"           "$BIN/browser-picker"
+ln -sf "$REPO/bin/browser-picker-rules"     "$BIN/browser-picker-rules"
+ln -sf "$REPO/bin/browser-picker-recommend" "$BIN/browser-picker-recommend"
 
 # Desktop entries: expand @BINDIR@ to the absolute bin path (xdg needs an abs Exec).
 for d in browser-picker browser-picker-rules; do

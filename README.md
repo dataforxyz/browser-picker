@@ -33,6 +33,8 @@ and remembers the decisions you want to make permanent.
   = full regex. First match wins.
 - **In-flow rule creation** — pick *📌 Always open this site in…* from the menu and a GTK
   editor opens **pre-filled** from the current URL; trim the scope, pick a profile, Save.
+- **Learns your habits** — when you keep opening similar links in the same profile, the
+  picker offers to make it a default on the 3rd time (see below). Fully **local & offline**.
 - **Private/incognito** — every profile also appears as a *🕶 Private* twin in the menu
   (regular profiles first, private ones below), so one pick opens it in a private window
   (`--incognito` / `--private-window` chosen per browser family).
@@ -85,6 +87,28 @@ shows the menu. Profiles are launched detached via `setsid`.
 
 Profile detection reads Chromium-family `Local State` (`profile.info_cache`) and
 Firefox-family `profiles.ini`.
+
+## Learns your habits
+
+`browser-picker` quietly notes which profile you pick for which link (only **manual,
+regular-window** picks — never private twins or links already auto-routed by a rule). The
+**3rd** time you open a similar place in the same profile, it pops a small
+*Yes / Not now / Never* prompt offering to make it a default. *Yes* opens the rules editor
+**pre-filled** with the suggested pattern and profile so you can review or trim before saving.
+
+It **generalizes across URLs** rather than memorizing one address — it suggests the broadest
+pattern that stays *pure* (won't capture links you open with a *different* profile):
+
+| What you opened (same profile)                          | Suggested rule    |
+| ------------------------------------------------------- | ----------------- |
+| the same repo, 3×                                       | `github.com/org/repo` |
+| three repos under one org                               | `github.com/org`  |
+| three orgs on a host you only use with one profile      | `github.com`      |
+
+This is a **local Python recommender** (`browser-picker-recommend`) — no network, no API
+keys, no LLM; your URLs never leave the machine. History lives in
+`~/.config/browser-picker/history.json`. Tune the trigger count with
+`BROWSER_PICKER_SUGGEST_THRESHOLD` (default `3`); *Never* mutes a suggestion for good.
 
 ## Notes / limitations
 

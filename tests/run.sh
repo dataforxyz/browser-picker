@@ -15,12 +15,13 @@ echo "== bash syntax =="
 bash -n "$ROOT/bin/browser-picker"
 
 echo "== python compile =="
-python3 -m py_compile "$ROOT/bin/browser-picker-rules"
+python3 -m py_compile "$ROOT/bin/browser-picker-rules" "$ROOT/bin/browser-picker-recommend"
 
 echo "== bash unit tests =="
 bash "$HERE/test_matching.sh"
 
 echo "== python unit tests =="
 python3 "$HERE/test_rules.py"
+python3 "$HERE/test_recommend.py"
 
 echo "ALL TESTS PASSED"

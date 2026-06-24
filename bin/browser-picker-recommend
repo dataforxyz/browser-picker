@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+# browser-picker-recommend — local, offline habit recommender for browser-picker.
+#
+# Learns which browser/profile you manually pick for which links and, once you've opened a
+# similar place enough times (default 3), suggests a smart-default rule — generalizing across
+# URLs (same org's repos -> the org; the same repo repeatedly -> that repo; a whole host you
+# only ever use with one profile -> the host). No network, no API keys: your URLs never leave
+# the machine. GUI-free and importable, so the pure logic is unit-tested without GTK.
+#
+# CLI (called by bin/browser-picker):
+#   browser-picker-recommend pick --url URL --label LABEL
+#       Record one manual pick. Print "pattern\tlabel" when a suggestion is ready, else nothing.
+#   browser-picker-recommend dismiss --label LABEL --pattern PATTERN --mode snooze|never
+#       snooze = stop suggesting until a few more matching picks; never = stop permanently.
+#
+# Store: ~/.config/browser-picker/history.json
+import json
+import os
+import sys
+import time
+import urllib.parse
+
+CONF = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "browser-picker"
+)
+STORE = os.path.join(CONF, "history.json")
+MAX_EVENTS = 1000
+SEG_CAP = 2  # generalize at most to host + 2 path segments (matches rules editor default_pattern)
+
+
+def threshold():
+    """Picks needed before a suggestion fires (env-overridable)."""
+    try:
+        t = int(os.environ.get("BROWSER_PICKER_SUGGEST_THRESHOLD", "3"))
+    except ValueError:
+        return 3
+    return t if t > 0 else 3
+
+
+def url_parts(url):
+    """(host, segs) for an http(s) URL; (None, []) for anything else (mailto, etc.)."""
+    if not isinstance(url, str):
+        return None, []
+    low = url.lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        return None, []
+    p = urllib.parse.urlsplit(url)
+    host = p.netloc.split("@")[-1].split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return None, []
+    segs = [s for s in p.path.split("/") if s]
+    return host, segs
+
+
+def common_prefix(seg_lists):
+    """Longest shared leading segments across a list of segment-lists."""
+    if not seg_lists:
+        return []
+    out = []
+    for i in range(min(len(s) for s in seg_lists)):
+        col = seg_lists[0][i]
+        if all(s[i] == col for s in seg_lists):
+            out.append(col)
+        else:
+            break
+    return out
+
+
+def make_pattern(host, segs):
+    return "/".join([host] + list(segs[:SEG_CAP]))
+
+
+def _matches(host, pat_segs, ev):
+    """Structural boundary match: is event ev under host + pat_segs prefix?"""
+    if ev.get("host") != host:
+        return False
+    esegs = ev.get("segs") or []
+    if len(esegs) < len(pat_segs):
+        return False
+    return all(esegs[i] == pat_segs[i] for i in range(len(pat_segs)))
+
+
+def recommend(events, label, host, threshold_n):
+    """Best (pattern, count) to suggest for (label, host), or None.
+
+    Generalizes to the deepest common ancestor of what was actually opened, then keeps the
+    rule *pure*: it must not also cover links the user opens with a different profile.
+    """
+    if not host:
+        return None
+    cluster = [e for e in events if e.get("label") == label and e.get("host") == host]
+    if len(cluster) < threshold_n:
+        return None
+
+    def pure(pat_segs):
+        return not any(
+            _matches(host, pat_segs, e) for e in events if e.get("label") != label
+        )
+
+    pref = common_prefix([e.get("segs") or [] for e in cluster])[:SEG_CAP]
+    if pure(pref):
+        return make_pattern(host, pref), len(cluster)
+
+    # Contested scope: another profile also uses it. Narrow to the triggering URL's repo-level
+    # pattern and only suggest if *that* cleanly separates and is itself frequent enough.
+    narrow = (cluster[-1].get("segs") or [])[:SEG_CAP]
+    if narrow and pure(narrow):
+        cnt = sum(1 for e in cluster if _matches(host, narrow, e))
+        if cnt >= threshold_n:
+            return make_pattern(host, narrow), cnt
+    return None
+
+
+def state_key(label, host):
+    return label + "\x00" + host
+
+
+def record_and_recommend(store, url, label, threshold_n, ts):
+    """Append the pick, refresh the cached candidate, and return (pattern, label) to show now."""
+    host, segs = url_parts(url)
+    if host is None:
+        return None  # don't track non-http(s) links
+    events = store.setdefault("events", [])
+    events.append({"url": url, "host": host, "segs": segs, "label": label, "ts": ts})
+    if len(events) > MAX_EVENTS:
+        del events[:-MAX_EVENTS]
+
+    state = store.setdefault("state", {})
+    key = state_key(label, host)
+    rec = recommend(events, label, host, threshold_n)
+    if rec is None:
+        # Preserve a "never" so it survives a transiently-contested round.
+        if state.get(key, {}).get("snooze") != -1:
+            state.pop(key, None)
+        return None
+
+    pattern, count = rec
+    snooze = state.get(key, {}).get("snooze", 0)
+    state[key] = {"pattern": pattern, "count": count, "snooze": snooze}
+    if snooze == -1:
+        return None  # muted forever
+    if count >= threshold_n and count >= snooze:
+        return pattern, label
+    return None
+
+
+def apply_dismiss(store, label, pattern, mode):
+    """Record the user's response to a suggestion."""
+    state = store.setdefault("state", {})
+    host = pattern.split("/")[0]
+    key = state_key(label, host)
+    st = state.get(key, {"pattern": pattern, "count": 0, "snooze": 0})
+    if mode == "never":
+        st["snooze"] = -1
+    else:  # snooze: re-ask after a few more matching picks
+        st["snooze"] = int(st.get("count", 0)) + threshold()
+    st["pattern"] = pattern
+    state[key] = st
+
+
+def load_store():
+    try:
+        with open(STORE) as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            d.setdefault("events", [])
+            d.setdefault("state", {})
+            return d
+    except (OSError, ValueError):
+        pass
+    return {"events": [], "state": {}}
+
+
+def save_store(store):
+    os.makedirs(CONF, exist_ok=True)
+    tmp = STORE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(store, f)
+    os.replace(tmp, STORE)
+
+
+def _opt(argv, name):
+    if name in argv:
+        i = argv.index(name)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def main(argv):
+    if not argv:
+        return 0
+    cmd = argv[0]
+    if cmd == "pick":
+        url, label = _opt(argv, "--url"), _opt(argv, "--label")
+        if not url or not label:
+            return 2
+        store = load_store()
+        rec = record_and_recommend(store, url, label, threshold(), int(time.time()))
+        save_store(store)
+        if rec:
+            sys.stdout.write("%s\t%s\n" % (rec[0], rec[1]))
+        return 0
+    if cmd == "dismiss":
+        label, pattern = _opt(argv, "--label"), _opt(argv, "--pattern")
+        mode = _opt(argv, "--mode") or "snooze"
+        if not label or not pattern:
+            return 2
+        store = load_store()
+        apply_dismiss(store, label, pattern, mode)
+        save_store(store)
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
