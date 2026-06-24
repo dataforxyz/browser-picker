@@ -60,4 +60,23 @@ your Chromium build — is visible. Tune the constants at the top of `background
 - A link that navigates the **app window itself** (same tab, not a new window) is not
   intercepted — doing so would break in-app OAuth redirects. Only new-window/new-tab links
   are diverted.
-- The extension load is manual and per-profile (Chromium limitation).
+- Loading is per browser data dir. `install-bridge.sh` automates it via the flags file (the
+  omarchy mechanism); the manual `chrome://extensions` → Load unpacked path is a fallback.
+
+## Firefox / Zen — not applicable
+
+The bridge is Chromium-only, and that isn't a gap on an omarchy setup:
+
+- **omarchy web apps are always Chromium.** `omarchy-launch-webapp` falls back to
+  `chromium.desktop` for any non-Chromium-family default browser, so Firefox/Zen never host
+  these web apps even when set as the default browser.
+- **No app-window model to intercept.** Firefox has no `--app=`/SSB mode; Zen's web-app
+  support (Firefox's upstream Taskbar Apps) currently opens pinned tabs in a normal window
+  rather than isolated app windows, and there is no `--app=`-style CLI flag yet — so there
+  are no escaping links to catch.
+- **Different, signed plumbing.** A Gecko port would need its own WebExtension
+  (`browser_specific_settings.gecko.id`), a `~/.mozilla/native-messaging-hosts/` manifest
+  keyed by `allowed_extensions`, and a *signed* XPI — the `--load-extension` flags-file
+  auto-load this relies on doesn't exist on Firefox.
+
+Revisit only if Zen/Firefox ship real isolated app windows plus an `--app=`-style flag.
