@@ -29,6 +29,7 @@ CONF = os.path.join(
 STORE = os.path.join(CONF, "history.json")
 SETTINGS = os.path.join(CONF, "settings.conf")
 RULES_FILE = os.path.join(CONF, "rules.conf")
+BROWSERS_FILE = os.path.join(CONF, "browsers.conf")
 MAX_EVENTS = 1000
 SEG_CAP = 2  # generalize at most to host + 2 path segments (matches rules editor default_pattern)
 
@@ -161,6 +162,41 @@ def peek(events, host, segs, threshold_n):
     return (best[0], best[1], best[2]) if best else None
 
 
+def rank_labels(labels, events, host, segs):
+    """Order `labels` for a link on (host, segs), most-likely first.
+
+    Sort key (all descending): picks under the same first path segment, then picks on the same
+    host, then total picks anywhere. Python's stable sort keeps browsers.conf order for ties
+    (including profiles you've never used), so the list only ever *promotes* what you use.
+    """
+    seg1 = segs[:1] if segs else []
+    stats = {l: [0, 0, 0] for l in labels}  # [under-first-segment, same-host, total]
+    for e in events:
+        s = stats.get(e.get("label"))
+        if s is None:
+            continue
+        s[2] += 1
+        if host and e.get("host") == host:
+            s[1] += 1
+            if _under(host, seg1, e):
+                s[0] += 1
+    return sorted(labels, key=lambda l: (-stats[l][0], -stats[l][1], -stats[l][2]))
+
+
+def browser_labels():
+    """Labels from browsers.conf, in file order."""
+    out = []
+    try:
+        with open(BROWSERS_FILE) as f:
+            for line in f:
+                s = line.strip()
+                if s and not s.startswith("#") and "|||" in s:
+                    out.append(s.split("|||", 1)[0])
+    except OSError:
+        pass
+    return out
+
+
 def record_event(store, url, label, ts, private=False):
     """Append one pick. Returns the host, or None for non-http(s) links."""
     host, segs = url_parts(url)
@@ -249,6 +285,14 @@ def main(argv):
         rec = peek(load_store().get("events", []), host, segs, threshold())
         if rec:
             sys.stdout.write("%s\t%s\t%s\n" % (rec[0], rec[1], "1" if rec[2] else "0"))
+        return 0
+    if cmd == "order":
+        url = _opt(argv, "--url")
+        labels = browser_labels()
+        host, segs = url_parts(url) if url else (None, [])
+        ranked = rank_labels(labels, load_store().get("events", []), host, segs) if host else labels
+        if ranked:
+            sys.stdout.write("\n".join(ranked) + "\n")
         return 0
     if cmd == "addrule":
         pattern, label = _opt(argv, "--pattern"), _opt(argv, "--label")

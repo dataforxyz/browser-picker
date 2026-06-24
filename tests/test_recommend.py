@@ -108,6 +108,25 @@ check(store["events"] == [], "non-http not recorded")
 store = store_from([("https://x.com/a", W, True)])
 check(store["events"][0].get("private") is True, "private pick recorded with flag")
 
+# --- rank_labels: smart menu ordering ---
+LABELS = ["Chromium — Work", "Chromium — Personal", "Firefox", "Brave"]
+hist = [
+    {"label": "Firefox", "host": "github.com", "segs": ["acme", "x"]},
+    {"label": "Firefox", "host": "github.com", "segs": ["acme", "y"]},
+    {"label": "Chromium — Personal", "host": "github.com", "segs": ["me", "blog"]},
+    {"label": "Chromium — Work", "host": "news.com", "segs": ["a"]},
+    {"label": "Chromium — Work", "host": "news.com", "segs": ["b"]},
+    {"label": "Chromium — Work", "host": "news.com", "segs": ["c"]},
+]
+# On github.com/acme/* the host+path-affine Firefox should lead, even though Work has more picks overall.
+check(bprec.rank_labels(LABELS, hist, "github.com", ["acme", "z"])[0] == "Firefox",
+      "rank: host/path affinity wins")
+# Unused profiles keep their browsers.conf order at the back (stable sort).
+check(bprec.rank_labels(LABELS, hist, "nowhere.com", [])[-1] == "Brave",
+      "rank: never-used keep file order at the back")
+# With no history, order is unchanged.
+check(bprec.rank_labels(LABELS, [], "x.com", ["a"]) == LABELS, "rank: empty history -> file order")
+
 # Default threshold offers on the 1st repeat: one prior pick of the same place -> offer on reopen.
 check(bprec.threshold() == 2, "default threshold is 2 (offer on 1st repeat)")
 check(peek_after([("https://x.io/a/1", W)], "https://x.io/a/1", threshold_n=2) == ("x.io/a/1", W, False),

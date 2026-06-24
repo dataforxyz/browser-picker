@@ -116,6 +116,12 @@ Picks made in a **private/incognito** window are learned separately: repeat one 
 shortcut offers a *private* default (e.g. *⭐ open in Brave 🕶 Private*), which writes a rule
 that always opens that scope in a private window. Normal and private habits never mix.
 
+The **menu itself is smart-ordered**: the profile you're most likely to want for *this* link
+(by host/path affinity, then overall use) is the **first** item, the *⭐ Make default* shortcut
+is **second**, and the rest of your profiles follow most-used-first; the manual *📌 Always
+open…* and *⚙ Edit rules…* sit at the end. (Ordering controls what's surfaced first; once you
+start typing, your menu program does its own fuzzy ranking.)
+
 This is a **local recommender** (`browser-picker-recommend`) — no network, no API keys, no
 LLM; your URLs never leave the machine. History lives in
 `~/.config/browser-picker/history.json`. The shortcut appears on the **1st repeat** (the 2nd

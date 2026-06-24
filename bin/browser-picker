@@ -68,8 +68,9 @@ have_recommender() { command -v browser-picker-recommend >/dev/null 2>&1; }
 main() {
   mapfile -t ENTRIES < <(grep -vE '^\s*(#|$)' "$CONF/browsers.conf" 2>/dev/null)
   mapfile -t RULES   < <(grep -vE '^\s*(#|$)' "$RULESFILE"          2>/dev/null)
-  local url="$1" r en rest pat lbl rpriv cmd choice target
+  local url="$1" r en rest pat lbl rpriv cmd choice target i l smart_out
   local sug sug_pattern="" sug_label="" sug_priv="0" sug_item=""
+  local -a SMART=()
 
   # 1) Smart defaults: first enabled, matching rule wins — skips the menu.
   if [ -n "$url" ]; then
@@ -116,12 +117,25 @@ main() {
     fi
   fi
 
+  # Smart order: profiles you use most (and most for this site) come first.
+  if [ -n "$url" ] && have_recommender; then
+    smart_out="$(browser-picker-recommend order --url "$url" 2>/dev/null)"
+    [ -n "$smart_out" ] && mapfile -t SMART <<< "$smart_out"
+  fi
+  [ "${#SMART[@]}" -eq 0 ] && mapfile -t SMART < <(entry_labels)
+
   choice="$(
-    { [ -n "$sug_item" ] && printf '%s\n' "$sug_item"
+    {
+      # Expected profile first, then the ⭐ make-default shortcut, then the rest.
+      [ "${#SMART[@]}" -gt 0 ] && printf '%s\n' "${SMART[0]}"
+      [ -n "$sug_item" ] && printf '%s\n' "$sug_item"
+      for ((i = 1; i < ${#SMART[@]}; i++)); do printf '%s\n' "${SMART[i]}"; done
+      # Private-window twins, same smart order.
+      for l in "${SMART[@]}"; do printf '%s\n' "$l$PRIV_SUFFIX"; done
+      # Manual options at the end (smart ordering makes them rarely needed).
       [ -n "$url" ] && printf '%s\n' "$REMEMBER_LABEL"
-      entry_labels             # regular profiles first
-      entry_private_labels     # then the same profiles as private-window twins
-      printf '%s\n' "$EDIT_LABEL"; } | menu "Open link in…"
+      printf '%s\n' "$EDIT_LABEL"
+    } | menu "Open link in…"
   )"
   [ -z "$choice" ] && return 0
 
