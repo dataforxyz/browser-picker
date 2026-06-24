@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Install the Browser Picker bridge: the native-messaging host + its manifest, so links
-# opened from Chromium web-app (--app=) windows route through browser-picker.
+# Install the Browser Picker bridge: the native-messaging host + its manifest, plus
+# auto-load of the extension via the browser flags file, so links opened from Chromium
+# web-app (--app=) windows route through browser-picker.
 #
-# Loading the extension itself is a one-time manual step (Chromium has no supported way to
-# install an unpacked extension non-interactively) — this script prints how at the end.
+# Auto-load works the omarchy way: Arch/omarchy Chromium wrappers read
+# ~/.config/<browser>-flags.conf and apply those flags to every launch (all profiles and
+# --user-data-dir web apps), so adding the extension to --load-extension there installs it
+# everywhere with no manual "Load unpacked". A manual fallback is printed at the end.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -57,33 +60,63 @@ for dir in \
   installed=$((installed + 1))
 done
 
-# Custom data dirs that web-app launchers pin with --user-data-dir (omarchy web apps can
-# run in their own dir, e.g. ~/.config/chromium-webapps). Chromium's native-host search is
-# per data dir, so the manifest must live in each of these too. These are intentional, so
-# create them even if a dir hasn't been launched yet.
+# Custom data dirs Chromium web apps run in. Two sources, deduped: (1) --user-data-dir in
+# the web-app .desktop launchers, and (2) any ~/.config/chromium-* dir — some apps use a
+# dedicated dir that ISN'T registered via a .desktop file (e.g. WhatsApp personal/business),
+# and Chromium's native-host search is per data dir, so the manifest must live in each.
 while IFS= read -r dir; do
   [ -n "$dir" ] || continue
   install_manifest "$dir"
   installed=$((installed + 1))
-done < <(grep -hoE -- '--user-data-dir=[^ ]+' "$HOME/.local/share/applications/"*.desktop 2>/dev/null \
-         | sed 's/--user-data-dir=//' | sort -u)
+done < <( { grep -hoE -- '--user-data-dir=[^ ]+' "$HOME/.local/share/applications/"*.desktop 2>/dev/null \
+              | sed 's/--user-data-dir=//' || true
+            for d in "$HOME"/.config/chromium-*; do
+              if [ -d "$d" ]; then printf '%s\n' "$d"; fi
+            done
+          } | sort -u )
 
 [ "$installed" -gt 0 ] || echo "  (no Chromium-family config dirs found yet — run a browser once, then re-run)"
 
+# --- Auto-load via the browser flags file (the omarchy mechanism) -----------------------
+# Idempotently ensure $EXTDIR is in the flags file's --load-extension list.
+ensure_load_extension() {  # <flags-file>
+  local conf="$1"
+  mkdir -p "$(dirname "$conf")"
+  if [ ! -f "$conf" ]; then
+    printf -- '--load-extension=%s\n' "$EXTDIR" > "$conf"
+    echo "  created $conf"
+  elif grep -qF -- "$EXTDIR" "$conf"; then
+    echo "  already enabled in $conf"
+  elif grep -q -- '--load-extension=' "$conf"; then
+    sed -i --follow-symlinks "s#\(--load-extension=[^[:space:]]*\)#\1,$EXTDIR#" "$conf"
+    echo "  added to --load-extension in $conf"
+  else
+    printf -- '--load-extension=%s\n' "$EXTDIR" >> "$conf"
+    echo "  appended --load-extension to $conf"
+  fi
+}
+
+echo "Enabling auto-load via browser flags files:"
+ensure_load_extension "$HOME/.config/chromium-flags.conf"   # primary (plain chromium)
+# Also extend any other browser flags file that already manages --load-extension (e.g.
+# omarchy's brave setup), so those browsers pick the bridge up too.
+for conf in "$HOME"/.config/*-flags.conf; do
+  [ -e "$conf" ] || continue
+  [ "$conf" = "$HOME/.config/chromium-flags.conf" ] && continue
+  grep -q -- '--load-extension=' "$conf" 2>/dev/null && ensure_load_extension "$conf"
+done
+
 cat <<EOF
 
-Native host installed. Now load the extension — once per data dir that runs web apps
-(Chromium can't install an unpacked extension non-interactively). For each web-app browser
-window / data dir:
+Done — the bridge auto-loads via the flags file(s) above, no manual extension install.
+Restart any open browser / web-app windows so they pick up the new flag (already-running
+windows won't have it until relaunched).
 
-  1. Go to:  chrome://extensions
-  2. Toggle "Developer mode" (top-right) ON
-  3. Click "Load unpacked" and select:
-        $EXTDIR
-  4. Confirm the ID shown is:  $EXT_ID
+  • Verify:  open chrome://extensions in a web-app window — you should see the bridge,
+             ID $EXT_ID
+  • Test:    click a link inside a web app (e.g. WhatsApp) — browser-picker should appear
+  • Log:     ~/.cache/browser-picker/bridge.log
 
-Default-profile apps share one load; apps launched with their own --user-data-dir
-(e.g. ~/.config/chromium-webapps) need the extension loaded from a window of that dir too.
-Then click a link inside a web app (e.g. WhatsApp) — browser-picker should appear.
-Activity is logged to ~/.cache/browser-picker/bridge.log.
+Manual fallback (if you'd rather not use the flags file): chrome://extensions ->
+Developer mode -> Load unpacked -> $EXTDIR
 EOF
