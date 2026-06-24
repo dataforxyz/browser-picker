@@ -18,18 +18,27 @@ app-window link click
 ## Install
 
 ```sh
-extension/install-bridge.sh          # installs the native host + its manifest (Chromium/Brave/…)
+extension/install-bridge.sh          # installs the native host + manifest, and enables auto-load
 ```
 
-Then load the extension once, by hand (Chromium can't persistently install an unpacked
-extension from the CLI):
+This installs the native host into every Chromium-family config dir (including custom
+web-app `--user-data-dir`s and any `~/.config/chromium-*` dir), then **auto-loads the
+extension** by adding it to `--load-extension` in `~/.config/chromium-flags.conf` (and any
+other browser flags file that already uses `--load-extension`, e.g. omarchy's brave setup).
 
-1. `chrome://extensions` → enable **Developer mode**
-2. **Load unpacked** → select the `extension/` directory
-3. Confirm the ID matches the one `install-bridge.sh` printed
+On Arch/omarchy the Chromium wrapper applies `<browser>-flags.conf` to every launch — all
+profiles and `--user-data-dir` web apps — so the extension loads everywhere with no manual
+step. **Restart any open browser/web-app windows** to pick it up.
 
 The extension ID is pinned by the `key` field in `manifest.json`, so the host's
 `allowed_origins` always matches without copying IDs around.
+
+### Manual fallback
+
+If you'd rather not use the flags file: `chrome://extensions` → **Developer mode** →
+**Load unpacked** → select the `extension/` directory (once per data dir that runs web
+apps). Don't combine both for the same data dir — pick the flags file *or* a manual load,
+or Chromium sees the same ID twice.
 
 ## How it decides what to divert
 
